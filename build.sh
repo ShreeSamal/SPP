@@ -1,0 +1,1 @@
+g++ -std=c++17 -o spp main.cpp lexer.cpp parser.cpp sema.cpp irgen.cpp codegen.cpp

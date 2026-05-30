@@ -1,0 +1,11 @@
+{
+  "iconDefinitions": {
+    "_spp": {
+      "iconPath": "./icons/spp.svg"
+    }
+  },
+  "fileExtensions": {
+    "spp": "_spp"
+  },
+  "file": "_spp"
+}

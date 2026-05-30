@@ -1,0 +1,43 @@
+{
+  "name": "spp-language",
+  "displayName": "S++ Language",
+  "description": "Syntax highlighting for the S++ programming language",
+  "version": "1.0.1",
+  "publisher": "ShreeSamal",
+  "icon": "icon.jpg",
+  "engines": { "vscode": "^1.60.0" },
+  "categories": ["Programming Languages"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ShreeSamal/spp-language"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "spp",
+        "aliases": ["S++", "spp"],
+        "extensions": [".spp"],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/spp.svg",
+          "dark":  "./icons/spp.svg"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "spp",
+        "scopeName": "source.spp",
+        "path": "./syntaxes/spp.tmLanguage.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "spp-icons",
+        "label": "S++ Icons",
+        "path": "./spp-icon-theme.json"
+      }
+    ]
+  }
+}
