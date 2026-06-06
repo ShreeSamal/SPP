@@ -1,19 +1,39 @@
 #include "codegen.hpp"
 #include <stdexcept>
-#include <cassert>
 
-// x86-64 System V ABI integer argument registers (first 6 args)
 static const char* INT_ARG_REGS[] = { "rdi", "rsi", "rdx", "rcx", "r8", "r9" };
-// float argument registers
-static const char* FLT_ARG_REGS[] = { "xmm0", "xmm1", "xmm2", "xmm3",
-                                       "xmm4",  "xmm5", "xmm6", "xmm7" };
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
-void CodeGen::emit(const std::string& line) {
-    out << "    " << line << "\n";
-}
-void CodeGen::emitLabel(const std::string& label) {
-    out << label << ":\n";
+void CodeGen::emit(const std::string& line) { out << "    " << line << "\n"; }
+void CodeGen::emitLabel(const std::string& l) { out << l << ":\n"; }
+
+// ─── String interning — gives each unique string a .data label ───────────────
+std::string CodeGen::internString(const std::string& content) {
+    auto it = stringPool.find(content);
+    if (it != stringPool.end()) return it->second;
+    std::string label = "str" + std::to_string(stringCount++);
+    stringPool[content] = label;
+
+    // emit to data section — escape special chars for NASM
+    dataSection << "    " << label << " db ";
+    if (content.empty()) {
+        dataSection << "0\n";
+        return label;
+    }
+    // emit each character, handle newline/tab
+    bool inString = false;
+    for (unsigned char c : content) {
+        if (c == '\n' || c == '\t' || c < 32 || c > 126) {
+            if (inString) { dataSection << "\", "; inString = false; }
+            dataSection << (int)c << ", ";
+        } else {
+            if (!inString) { dataSection << "\""; inString = true; }
+            dataSection << c;
+        }
+    }
+    if (inString) dataSection << "\", ";
+    dataSection << "0\n";
+    return label;
 }
 
 // ─── Stack slot management ────────────────────────────────────────────────────
@@ -30,42 +50,47 @@ std::string CodeGen::slot(const std::string& name) {
     return "qword [rbp - " + std::to_string(stackMap[name]) + "]";
 }
 
-// ─── Collect function return type info from Program ───────────────────────────
+// ─── Collect function return types ────────────────────────────────────────────
 void CodeGen::collectFnInfo(const Program& prog) {
     for (auto& fn : prog.fns) {
         std::string rt;
         switch (fn->returnType) {
-            case TypeKind::FLOAT: rt = "float"; break;
-            case TypeKind::VOID:  rt = "void";  break;
-            default:              rt = "int";   break;
+            case TypeKind::FLOAT:  rt = "float";  break;
+            case TypeKind::VOID:   rt = "void";   break;
+            case TypeKind::STRING: rt = "string"; break;
+            default:               rt = "int";    break;
         }
         fnReturnTypes[fn->name] = rt;
     }
 }
 
-// ─── Scan all locals/temps in a function to pre-allocate stack ────────────────
+// ─── Scan locals — pre-allocate all stack slots ────────────────────────────────
 void CodeGen::scanLocals(const IRFunction& fn) {
     stackMap.clear();
     stackSize = 0;
+    typeMap.clear();
+
     for (auto& ins : fn.instrs) {
-        if (!ins.dst.empty())  allocSlot(ins.dst);
-        if (!ins.src1.empty() && ins.src1[0] != 'L' &&
+        if (!ins.dst.empty()) allocSlot(ins.dst);
+
+        // track string temps
+        if (ins.op == IROp::ASSIGN_LIT && ins.src1 == "__str__")
+            typeMap[ins.dst] = "string";
+
+        if (!ins.src1.empty() &&
             ins.op != IROp::FUNC_BEGIN && ins.op != IROp::FUNC_END &&
-            ins.op != IROp::GOTO && ins.op != IROp::LABEL &&
+            ins.op != IROp::GOTO       && ins.op != IROp::LABEL     &&
             ins.op != IROp::CALL) {
-            // src1 might be a variable name (not a literal, not a label)
-            // heuristic: if it's not a number and not empty, allocate
             bool isNum = !ins.src1.empty() &&
-                         (isdigit(ins.src1[0]) || ins.src1[0] == '-');
-            if (!isNum) allocSlot(ins.src1);
+                         (isdigit((unsigned char)ins.src1[0]) || ins.src1[0] == '-');
+            bool isStr = ins.src1 == "__str__";
+            if (!isNum && !isStr) allocSlot(ins.src1);
         }
         if (!ins.src2.empty() && ins.op == IROp::BINARY) {
-            bool isNum = !ins.src2.empty() &&
-                         (isdigit(ins.src2[0]) || ins.src2[0] == '-');
+            bool isNum = isdigit((unsigned char)ins.src2[0]) || ins.src2[0] == '-';
             if (!isNum) allocSlot(ins.src2);
         }
     }
-    // align to 16 bytes
     if (stackSize % 16 != 0) stackSize += 8;
 }
 
@@ -75,48 +100,54 @@ void CodeGen::scanLocals(const IRFunction& fn) {
 std::string CodeGen::generate(const IRProgram& ir, const Program& prog) {
     collectFnInfo(prog);
 
-    // ── Data section ──────────────────────────────────────────────────────
-    out << "section .data\n";
-    out << "    fmt_int   db \"%lld\", 10, 0\n";
-    out << "    fmt_float db \"%f\",   10, 0\n";
-    out << "\n";
-
-    // ── Text section ──────────────────────────────────────────────────────
-    out << "section .text\n";
-    out << "    global main\n";
-    out << "    extern printf\n";
-    out << "\n";
-
-    for (auto& fn : ir.fns)
+    // generate all functions first (string interning fills dataSection)
+    std::ostringstream fnOut;
+    for (auto& fn : ir.fns) {
+        // swap out to fnOut temporarily
+        std::ostringstream tmp;
+        tmp << out.str();
+        out.str(""); out.clear();
         genFunction(fn);
+        tmp << out.str();
+        out.str(""); out.clear();
+        out << tmp.str();
+    }
 
-    return out.str();
+    // assemble final output: data section first, then text
+    std::ostringstream final;
+    final << "section .data\n";
+    final << "    fmt_int   db \"%lld\", 10, 0\n";
+    final << "    fmt_float db \"%f\",   10, 0\n";
+    final << "    fmt_str   db \"%s\",   10, 0\n";
+    final << dataSection.str();
+    final << "\n";
+    final << "section .text\n";
+    final << "    global main\n";
+    final << "    extern printf\n";
+    final << "\n";
+    final << out.str();
+    return final.str();
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Function prologue / epilogue
+// Function
 // ═════════════════════════════════════════════════════════════════════════════
 void CodeGen::genFunction(const IRFunction& fn) {
     pendingArgs.clear();
     scanLocals(fn);
 
-    // label
     emitLabel(fn.name);
-
-    // prologue
     emit("push rbp");
     emit("mov  rbp, rsp");
     emit("sub  rsp, " + std::to_string(stackSize));
 
-    // spill parameters: rdi, rsi, rdx, rcx, r8, r9 → stack slots
+    // spill parameters
     for (int i = 0; i < (int)fn.params.size() && i < 6; i++)
         emit("mov  " + slot(fn.params[i]) + ", " + INT_ARG_REGS[i]);
 
-    // body
     for (auto& ins : fn.instrs)
         genInstr(ins);
 
-    // implicit return 0 for void / main
     emit("xor  eax, eax");
     emit("leave");
     emit("ret");
@@ -124,45 +155,47 @@ void CodeGen::genFunction(const IRFunction& fn) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Dispatch one IR instruction
+// Dispatch
 // ═════════════════════════════════════════════════════════════════════════════
 void CodeGen::genInstr(const IRInstr& ins) {
     switch (ins.op) {
-
         case IROp::FUNC_BEGIN:
         case IROp::FUNC_END:
-            break; // handled by genFunction
+            break;
 
-        // dst = literal
         case IROp::ASSIGN_LIT: {
-            // check if float literal
-            bool isFloat = ins.src1.find('.') != std::string::npos;
-            if (isFloat) {
-                // store via xmm0
-                emit("; float literal " + ins.src1);
-                // use __float64__ constant trick via rax
-                // encode with movq + xmm
-                // simplest: use a .data constant — inline via hex
-                // For simplicity: push as integer bits using double union
-                union { double d; long long i; } u;
-                u.d = std::stod(ins.src1);
-                emit("mov  rax, " + std::to_string(u.i));
+            if (ins.src1 == "__str__") {
+                // intern the string, store its address
+                std::string lbl = internString(ins.op_str);
+                emit("lea  rax, [rel " + lbl + "]");
                 emit("mov  " + slot(ins.dst) + ", rax");
+                typeMap[ins.dst] = "string";
             } else {
-                emit("mov  " + slot(ins.dst) + ", " + ins.src1);
+                bool isFloat = ins.src1.find('.') != std::string::npos;
+                if (isFloat) {
+                    union { double d; long long i; } u;
+                    u.d = std::stod(ins.src1);
+                    emit("mov  rax, " + std::to_string(u.i));
+                    emit("mov  " + slot(ins.dst) + ", rax");
+                } else {
+                    emit("mov  " + slot(ins.dst) + ", " + ins.src1);
+                }
             }
             break;
         }
 
-        // dst = src  (variable copy)
         case IROp::ASSIGN_VAR: {
+            // propagate string type
+            if (typeMap.count(ins.src1))
+                typeMap[ins.dst] = typeMap[ins.src1];
             emit("mov  rax, " + slot(ins.src1));
             emit("mov  " + slot(ins.dst) + ", rax");
             break;
         }
 
-        // named variable store: dst(name) = src
         case IROp::STORE: {
+            if (typeMap.count(ins.src1))
+                typeMap[ins.dst] = typeMap[ins.src1];
             emit("mov  rax, " + slot(ins.src1));
             emit("mov  " + slot(ins.dst) + ", rax");
             break;
@@ -170,25 +203,12 @@ void CodeGen::genInstr(const IRInstr& ins) {
 
         case IROp::BINARY:  genBinary(ins);  break;
         case IROp::UNARY:   genUnary(ins);   break;
-
-        // stage arg for upcoming call
-        case IROp::PARAM:
-            pendingArgs.push_back(ins.src1);
-            break;
-
+        case IROp::PARAM:   pendingArgs.push_back(ins.src1); break;
         case IROp::CALL:    genCall(ins);    break;
         case IROp::PRINT:   genPrint(ins);   break;
         case IROp::RETURN:  genReturn(ins);  break;
-
-        case IROp::LABEL:
-            emitLabel(ins.src1);
-            break;
-
-        case IROp::GOTO:
-            emit("jmp  " + ins.src1);
-            break;
-
-        // iffalse src1 goto src2
+        case IROp::LABEL:   emitLabel(ins.src1); break;
+        case IROp::GOTO:    emit("jmp  " + ins.src1); break;
         case IROp::IFFALSE:
             emit("cmp  " + slot(ins.src1) + ", 0");
             emit("je   " + ins.src2);
@@ -197,31 +217,12 @@ void CodeGen::genInstr(const IRInstr& ins) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Binary operations
+// Binary
 // ═════════════════════════════════════════════════════════════════════════════
 void CodeGen::genBinary(const IRInstr& ins) {
-    const std::string& op  = ins.op_str;
-    bool isFloat = false;
+    const std::string& op = ins.op_str;
 
-    // detect float: check if either slot was stored as float bits
-    // simple heuristic: if op is +/-/*// and the IR came from float context
-    // For now we check if the source came from a float literal by slot name
-    // A robust impl would carry type info — for simplicity we use integer
-    // ops for all binary, and float ops only for known float temps.
-    // Since sema guarantees types match, we just need to know the type.
-    // We use integer paths for int/bool, float for float.
-    // We'll detect float by checking if the value in the slot looks like
-    // a double bit pattern — instead let's just use integer arithmetic
-    // for all non-float ops and use SSE for float ops.
-    // For this compiler we track float vars by name prefix convention:
-    // Not ideal — best fix is passing type map. We skip float binary for now
-    // and handle it the same as int (works for comparisons, fails for arith).
-    // TODO Phase 6: pass type annotation into codegen.
-    (void)isFloat;
-
-    // ── Comparison operators → result is 0 or 1 ──────────────────────────
-    if (op == "==" || op == "!=" ||
-        op == "<"  || op == ">"  ||
+    if (op == "==" || op == "!=" || op == "<" || op == ">" ||
         op == "<=" || op == ">=") {
         emit("mov  rax, " + slot(ins.src1));
         emit("cmp  rax, " + slot(ins.src2));
@@ -237,8 +238,6 @@ void CodeGen::genBinary(const IRInstr& ins) {
         emit("mov  " + slot(ins.dst) + ", rax");
         return;
     }
-
-    // ── Logical && and || ─────────────────────────────────────────────────
     if (op == "&&") {
         emit("mov  rax, " + slot(ins.src1));
         emit("and  rax, " + slot(ins.src2));
@@ -251,8 +250,6 @@ void CodeGen::genBinary(const IRInstr& ins) {
         emit("mov  " + slot(ins.dst) + ", rax");
         return;
     }
-
-    // ── Arithmetic: +  -  *  /  % ────────────────────────────────────────
     if (op == "+") {
         emit("mov  rax, " + slot(ins.src1));
         emit("add  rax, " + slot(ins.src2));
@@ -267,19 +264,19 @@ void CodeGen::genBinary(const IRInstr& ins) {
         emit("mov  " + slot(ins.dst) + ", rax");
     } else if (op == "/") {
         emit("mov  rax, " + slot(ins.src1));
-        emit("cqo");                          // sign-extend rax into rdx:rax
-        emit("idiv " + slot(ins.src2));       // rax = quotient
+        emit("cqo");
+        emit("idiv " + slot(ins.src2));
         emit("mov  " + slot(ins.dst) + ", rax");
     } else if (op == "%") {
         emit("mov  rax, " + slot(ins.src1));
         emit("cqo");
-        emit("idiv " + slot(ins.src2));       // rdx = remainder
+        emit("idiv " + slot(ins.src2));
         emit("mov  " + slot(ins.dst) + ", rdx");
     }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Unary operations
+// Unary
 // ═════════════════════════════════════════════════════════════════════════════
 void CodeGen::genUnary(const IRInstr& ins) {
     if (ins.op_str == "-") {
@@ -295,46 +292,34 @@ void CodeGen::genUnary(const IRInstr& ins) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Function call  — uses System V ABI
+// Call
 // ═════════════════════════════════════════════════════════════════════════════
 void CodeGen::genCall(const IRInstr& ins) {
     int nArgs = std::stoi(ins.src2);
-
-    // load args into registers (up to 6)
-    for (int i = 0; i < nArgs && i < 6; i++) {
-        emit("mov  " + std::string(INT_ARG_REGS[i]) +
-             ", " + slot(pendingArgs[i]));
-    }
+    for (int i = 0; i < nArgs && i < 6; i++)
+        emit("mov  " + std::string(INT_ARG_REGS[i]) + ", " + slot(pendingArgs[i]));
     pendingArgs.clear();
-
-    // align stack to 16 bytes before call (ABI requirement)
     emit("call " + ins.src1);
-
-    // store return value
     if (!ins.dst.empty()) {
-        // check if function returns float
         auto it = fnReturnTypes.find(ins.src1);
-        if (it != fnReturnTypes.end() && it->second == "float") {
-            // xmm0 holds float return — store as bits via movq
-            emit("movq rax, xmm0");
-            emit("mov  " + slot(ins.dst) + ", rax");
-        } else {
-            emit("mov  " + slot(ins.dst) + ", rax");
+        if (it != fnReturnTypes.end() && it->second == "string") {
+            typeMap[ins.dst] = "string";
         }
+        emit("mov  " + slot(ins.dst) + ", rax");
     }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Print — calls printf with appropriate format string
+// Print — chooses format string based on type
 // ═════════════════════════════════════════════════════════════════════════════
 void CodeGen::genPrint(const IRInstr& ins) {
-    // We don't have type info here — we'd need to pass it through IR.
-    // Default: treat as integer (int / bool).
-    // For float: caller should have stored bits; we load into xmm0.
-    // Use fmt_int for now; float printing needs type annotation (Phase 6 TODO).
+    bool isStr = typeMap.count(ins.src1) && typeMap[ins.src1] == "string";
     emit("mov  rsi, " + slot(ins.src1));
-    emit("lea  rdi, [rel fmt_int]");
-    emit("xor  eax, eax");    // al = 0: no xmm args to printf
+    if (isStr)
+        emit("lea  rdi, [rel fmt_str]");
+    else
+        emit("lea  rdi, [rel fmt_int]");
+    emit("xor  eax, eax");
     emit("call printf");
 }
 

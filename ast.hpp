@@ -4,15 +4,16 @@
 #include <memory>
 
 // ─── Types ───────────────────────────────────────────────────────────────────
-enum class TypeKind { INT, FLOAT, BOOL, VOID };
+enum class TypeKind { INT, FLOAT, BOOL, VOID, STRING };
 
 static const char* typeKindName(TypeKind t) {
     switch (t) {
-        case TypeKind::INT:   return "int";
-        case TypeKind::FLOAT: return "float";
-        case TypeKind::BOOL:  return "bool";
-        case TypeKind::VOID:  return "void";
-        default:              return "unknown";
+        case TypeKind::INT:    return "int";
+        case TypeKind::FLOAT:  return "float";
+        case TypeKind::BOOL:   return "bool";
+        case TypeKind::VOID:   return "void";
+        case TypeKind::STRING: return "string";
+        default:               return "unknown";
     }
 }
 
@@ -21,33 +22,30 @@ struct Expr;
 struct Stmt;
 struct Block;
 
-using ExprPtr = std::unique_ptr<Expr>;
-using StmtPtr = std::unique_ptr<Stmt>;
+using ExprPtr  = std::unique_ptr<Expr>;
+using StmtPtr  = std::unique_ptr<Stmt>;
 using BlockPtr = std::unique_ptr<Block>;
 
 // ═════════════════════════════════════════════════════════════════════════════
 // EXPRESSIONS
 // ═════════════════════════════════════════════════════════════════════════════
-enum class ExprKind { LITERAL_INT, LITERAL_FLOAT, LITERAL_BOOL,
-                      VAR, BINARY, UNARY, CALL };
+enum class ExprKind {
+    LITERAL_INT, LITERAL_FLOAT, LITERAL_BOOL, LITERAL_STRING,
+    VAR, BINARY, UNARY, CALL
+};
 
 struct Expr {
-    ExprKind kind;
-    int line;
+    ExprKind    kind;
+    int         line;
 
-    // LITERAL_INT
     long long   ival = 0;
-    // LITERAL_FLOAT
     double      fval = 0.0;
-    // LITERAL_BOOL
     bool        bval = false;
-    // VAR / CALL
-    std::string name;
-    // BINARY / UNARY
-    std::string op;
+    std::string sval;        // string literal value  OR  var/call name  OR  op
+    std::string name;        // var name / call name
+    std::string op;          // operator
     ExprPtr     left;
-    ExprPtr     right;   // binary rhs / unary operand stored in 'left'
-    // CALL
+    ExprPtr     right;
     std::vector<ExprPtr> args;
 };
 
@@ -65,6 +63,11 @@ inline ExprPtr makeFloatLit(double v, int line) {
 inline ExprPtr makeBoolLit(bool v, int line) {
     auto e = std::make_unique<Expr>();
     e->kind = ExprKind::LITERAL_BOOL; e->bval = v; e->line = line;
+    return e;
+}
+inline ExprPtr makeStringLit(std::string v, int line) {
+    auto e = std::make_unique<Expr>();
+    e->kind = ExprKind::LITERAL_STRING; e->sval = std::move(v); e->line = line;
     return e;
 }
 inline ExprPtr makeVar(std::string n, int line) {
@@ -102,18 +105,14 @@ struct Block {
 
 struct Stmt {
     StmtKind kind;
-    int line;
+    int      line;
 
-    // LET
     std::string name;
     TypeKind    varType;
-    // ASSIGN / LET init / RETURN / PRINT / EXPR
     ExprPtr     expr;
-    // IF / WHILE condition
     ExprPtr     cond;
-    // IF / WHILE body
     BlockPtr    thenBlock;
-    BlockPtr    elseBlock;  // IF only, may be null
+    BlockPtr    elseBlock;
 };
 
 // ─── Stmt factory helpers ────────────────────────────────────────────────────
@@ -129,8 +128,7 @@ inline StmtPtr makeAssignStmt(std::string n, ExprPtr val, int line) {
     s->expr = std::move(val); s->line = line;
     return s;
 }
-inline StmtPtr makeIfStmt(ExprPtr cond, BlockPtr then,
-                           BlockPtr els, int line) {
+inline StmtPtr makeIfStmt(ExprPtr cond, BlockPtr then, BlockPtr els, int line) {
     auto s = std::make_unique<Stmt>();
     s->kind = StmtKind::IF; s->cond = std::move(cond);
     s->thenBlock = std::move(then); s->elseBlock = std::move(els);
@@ -168,11 +166,11 @@ struct Param {
 };
 
 struct FnDecl {
-    std::string      name;
+    std::string        name;
     std::vector<Param> params;
-    TypeKind         returnType;
-    BlockPtr         body;
-    int              line;
+    TypeKind           returnType;
+    BlockPtr           body;
+    int                line;
 };
 
 struct Program {

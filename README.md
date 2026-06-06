@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![S++ Logo](spp-vscode/icon.jpg)
+![S++ Logo](spp-vscode/icons/spp.svg)
 
 **A simple, statically-typed, compiled programming language**
 
@@ -21,6 +21,7 @@
    - [Variables](#variables)
    - [Operators](#operators)
    - [Control Flow](#control-flow)
+   - [Strings](#strings)
    - [Functions](#functions)
    - [Print](#print)
    - [Comments](#comments)
@@ -48,7 +49,7 @@ Every S++ program is:
 
 ```bash
 # Linux / WSL
-sudo apt install g++ nasm gcc
+sudo apt install g++ nasm gcc make
 ```
 
 ### Build the compiler
@@ -56,6 +57,7 @@ sudo apt install g++ nasm gcc
 ```bash
 git clone <repo>
 cd spp
+make
 ```
 
 ### Write your first program
@@ -84,7 +86,7 @@ fn main() -> void {
 
 ### Types
 
-S++ has 4 built-in types:
+S++ has 5 built-in types:
 
 | Type    | Description           | Example values        |
 |---------|-----------------------|-----------------------|
@@ -92,6 +94,7 @@ S++ has 4 built-in types:
 | `float` | 64-bit floating point | `3.14`, `0.5`, `-1.0` |
 | `bool`  | Boolean               | `true`, `false`       |
 | `void`  | No value (functions only) | —                 |
+| `string`| Text value               | `"hello"`, `"S++"` |
 
 ---
 
@@ -180,19 +183,57 @@ let x: int = (2 + 3) * 4;   // 20, not 14
 
 ---
 
+### Strings
+
+String values hold text. Declare with `let`, use with `print`.
+
+**Declaration:**
+```
+let name: string = "S++";
+let msg: string  = "Hello, World!";
+```
+
+**Print a string:**
+```
+print(name);     // S++
+print("direct"); // direct
+```
+
+**Escape sequences:**
+
+| Sequence | Meaning |
+|----------|---------|
+| `\n`    | Newline |
+| `\t`    | Tab     |
+| `\\`   | Backslash |
+| `\"`    | Double quote |
+
+```
+let line: string = "col1\tcol2";
+print(line);    // col1    col2
+```
+
+> **Current limitations:** strings support declaration and printing only.
+> Concatenation (`+`), comparison (`==`), length, and passing as function
+> arguments are not yet supported.
+
+---
+
 ### Control Flow
 
-#### If / Else
+#### If / Else / Else If
 
 ```
 if (<condition>) {
     // runs when condition is true
+} else if (<condition>) {
+    // checked if first condition is false (can chain multiple)
 } else {
-    // runs when condition is false (optional)
+    // runs if all conditions above are false (optional)
 }
 ```
 
-**Examples:**
+**Simple if/else:**
 ```
 let score: int = 85;
 
@@ -203,7 +244,7 @@ if (score >= 90) {
 }
 ```
 
-Without else:
+**Without else:**
 ```
 let x: int = 10;
 if (x > 0) {
@@ -211,19 +252,22 @@ if (x > 0) {
 }
 ```
 
-Nested if/else:
+**Else if chain:**
 ```
-let n: int = 72;
+let score: int = 75;
 
-if (n >= 90) {
-    print(3);    // A
+if (score >= 90) {
+    print("A");
+} else if (score >= 80) {
+    print("B");
+} else if (score >= 70) {
+    print("C");
+} else if (score >= 60) {
+    print("D");
 } else {
-    if (n >= 60) {
-        print(2);    // B
-    } else {
-        print(1);    // C
-    }
+    print("F");
 }
+// prints: C
 ```
 
 > **Rule:** The condition must be of type `bool`.
@@ -371,16 +415,12 @@ fn main() -> void {
         let buzz: bool = i % 5 == 0;
         if (fizz && buzz) {
             print(0);    // FizzBuzz
+        } else if (fizz) {
+            print(1);    // Fizz
+        } else if (buzz) {
+            print(2);    // Buzz
         } else {
-            if (fizz) {
-                print(1);    // Fizz
-            } else {
-                if (buzz) {
-                    print(2);    // Buzz
-                } else {
-                    print(i);
-                }
-            }
+            print(i);
         }
         i = i + 1;
     }
@@ -446,7 +486,7 @@ fn main() -> void {
 
 ```bash
 # Build compiler
-./build.sh
+make
 
 # Compile and run a .spp file
 ./run.sh program.spp

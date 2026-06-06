@@ -1,6 +1,5 @@
 #include "parser.hpp"
 #include <stdexcept>
-#include <cassert>
 
 // ─── Constructor ─────────────────────────────────────────────────────────────
 Parser::Parser(std::vector<Token> toks)
@@ -13,7 +12,7 @@ Token& Parser::current() { return tokens[pos]; }
 
 Token& Parser::peek(int offset) {
     size_t idx = pos + offset;
-    if (idx >= tokens.size()) return tokens.back(); // EOF
+    if (idx >= tokens.size()) return tokens.back();
     return tokens[idx];
 }
 
@@ -46,11 +45,12 @@ void Parser::error(const std::string& msg) {
 // ═════════════════════════════════════════════════════════════════════════════
 TypeKind Parser::parseType() {
     switch (current().type) {
-        case TokenType::TYPE_INT:   advance(); return TypeKind::INT;
-        case TokenType::TYPE_FLOAT: advance(); return TypeKind::FLOAT;
-        case TokenType::TYPE_BOOL:  advance(); return TypeKind::BOOL;
-        case TokenType::TYPE_VOID:  advance(); return TypeKind::VOID;
-        default: error("expected a type (int, float, bool, void)");
+        case TokenType::TYPE_INT:    advance(); return TypeKind::INT;
+        case TokenType::TYPE_FLOAT:  advance(); return TypeKind::FLOAT;
+        case TokenType::TYPE_BOOL:   advance(); return TypeKind::BOOL;
+        case TokenType::TYPE_VOID:   advance(); return TypeKind::VOID;
+        case TokenType::TYPE_STRING: advance(); return TypeKind::STRING;
+        default: error("expected a type (int, float, bool, void, string)");
     }
 }
 
@@ -73,7 +73,7 @@ std::unique_ptr<FnDecl> Parser::parseFnDecl() {
     fn->name      = expect(TokenType::IDENT, "expected function name").value;
 
     expect(TokenType::LPAREN, "expected '(' after function name");
-    fn->params = parseParams();
+    fn->params    = parseParams();
     expect(TokenType::RPAREN, "expected ')' after parameters");
     expect(TokenType::ARROW,  "expected '->' after parameters");
     fn->returnType = parseType();
@@ -83,8 +83,7 @@ std::unique_ptr<FnDecl> Parser::parseFnDecl() {
 
 std::vector<Param> Parser::parseParams() {
     std::vector<Param> params;
-    if (check(TokenType::RPAREN)) return params; // empty
-
+    if (check(TokenType::RPAREN)) return params;
     do {
         Param p;
         p.name = expect(TokenType::IDENT, "expected parameter name").value;
@@ -92,7 +91,6 @@ std::vector<Param> Parser::parseParams() {
         p.type = parseType();
         params.push_back(std::move(p));
     } while (match(TokenType::COMMA));
-
     return params;
 }
 
@@ -122,12 +120,12 @@ StmtPtr Parser::parseStmt() {
 // let IDENT : type = expr ;
 StmtPtr Parser::parseLetStmt() {
     int line = current().line;
-    expect(TokenType::LET,   "expected 'let'");
+    expect(TokenType::LET, "expected 'let'");
     std::string name = expect(TokenType::IDENT, "expected variable name").value;
     expect(TokenType::COLON, "expected ':'");
-    TypeKind type    = parseType();
-    expect(TokenType::EQ,    "expected '='");
-    ExprPtr init     = parseExpr();
+    TypeKind type = parseType();
+    expect(TokenType::EQ,   "expected '='");
+    ExprPtr init  = parseExpr();
     expect(TokenType::SEMICOLON, "expected ';'");
     return makeLetStmt(name, type, std::move(init), line);
 }
@@ -135,23 +133,19 @@ StmtPtr Parser::parseLetStmt() {
 // IDENT = expr ;   OR   expr ;
 StmtPtr Parser::parseAssignOrExprStmt() {
     int line = current().line;
-
-    // Look-ahead: IDENT followed by '=' (not '==') → assignment
     if (check(TokenType::IDENT) && peek().type == TokenType::EQ) {
-        std::string name = advance().value; // consume IDENT
-        advance();                          // consume '='
+        std::string name = advance().value;
+        advance(); // consume '='
         ExprPtr val = parseExpr();
         expect(TokenType::SEMICOLON, "expected ';'");
         return makeAssignStmt(name, std::move(val), line);
     }
-
-    // Otherwise it's a plain expression statement (e.g. a function call)
     ExprPtr e = parseExpr();
     expect(TokenType::SEMICOLON, "expected ';'");
     return makeExprStmt(std::move(e), line);
 }
 
-// if ( expr ) block ( else block )?
+// if ( expr ) block ( else if ... | else block )?
 StmtPtr Parser::parseIfStmt() {
     int line = current().line;
     expect(TokenType::IF,     "expected 'if'");
@@ -160,8 +154,18 @@ StmtPtr Parser::parseIfStmt() {
     expect(TokenType::RPAREN, "expected ')'");
     BlockPtr thenBlock = parseBlock();
     BlockPtr elseBlock;
-    if (match(TokenType::ELSE))
-        elseBlock = parseBlock();
+
+    if (match(TokenType::ELSE)) {
+        if (check(TokenType::IF)) {
+            // else if → wrap the nested if-stmt in a synthetic block
+            auto elseIf = parseIfStmt();
+            elseBlock = std::make_unique<Block>();
+            elseBlock->stmts.push_back(std::move(elseIf));
+        } else {
+            elseBlock = parseBlock();
+        }
+    }
+
     return makeIfStmt(std::move(cond), std::move(thenBlock),
                       std::move(elseBlock), line);
 }
@@ -198,11 +202,10 @@ StmtPtr Parser::parsePrintStmt() {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Expressions  (precedence: low → high)
+// Expressions
 // ═════════════════════════════════════════════════════════════════════════════
 ExprPtr Parser::parseExpr()       { return parseOr(); }
 
-// ||
 ExprPtr Parser::parseOr() {
     ExprPtr left = parseAnd();
     while (check(TokenType::PIPE_PIPE)) {
@@ -213,7 +216,6 @@ ExprPtr Parser::parseOr() {
     return left;
 }
 
-// &&
 ExprPtr Parser::parseAnd() {
     ExprPtr left = parseEquality();
     while (check(TokenType::AMP_AMP)) {
@@ -224,7 +226,6 @@ ExprPtr Parser::parseAnd() {
     return left;
 }
 
-// == !=
 ExprPtr Parser::parseEquality() {
     ExprPtr left = parseComparison();
     while (check(TokenType::EQ_EQ) || check(TokenType::BANG_EQ)) {
@@ -235,7 +236,6 @@ ExprPtr Parser::parseEquality() {
     return left;
 }
 
-// < > <= >=
 ExprPtr Parser::parseComparison() {
     ExprPtr left = parseAddSub();
     while (check(TokenType::LT)    || check(TokenType::GT) ||
@@ -247,7 +247,6 @@ ExprPtr Parser::parseComparison() {
     return left;
 }
 
-// + -
 ExprPtr Parser::parseAddSub() {
     ExprPtr left = parseMulDiv();
     while (check(TokenType::PLUS) || check(TokenType::MINUS)) {
@@ -258,10 +257,9 @@ ExprPtr Parser::parseAddSub() {
     return left;
 }
 
-// * / %
 ExprPtr Parser::parseMulDiv() {
     ExprPtr left = parseUnary();
-    while (check(TokenType::STAR)  || check(TokenType::SLASH) ||
+    while (check(TokenType::STAR)    || check(TokenType::SLASH) ||
            check(TokenType::PERCENT)) {
         int line = current().line;
         std::string op = advance().value;
@@ -270,7 +268,6 @@ ExprPtr Parser::parseMulDiv() {
     return left;
 }
 
-// ! -
 ExprPtr Parser::parseUnary() {
     if (check(TokenType::BANG) || check(TokenType::MINUS)) {
         int line = current().line;
@@ -280,36 +277,31 @@ ExprPtr Parser::parseUnary() {
     return parsePrimary();
 }
 
-// literals, variables, function calls, grouped expr
 ExprPtr Parser::parsePrimary() {
     int line = current().line;
 
-    // Integer literal
     if (check(TokenType::INT_LIT)) {
         long long v = std::stoll(current().value);
         advance();
         return makeIntLit(v, line);
     }
-
-    // Float literal
     if (check(TokenType::FLOAT_LIT)) {
         double v = std::stod(current().value);
         advance();
         return makeFloatLit(v, line);
     }
-
-    // Bool literal
     if (check(TokenType::BOOL_LIT)) {
         bool v = (current().value == "true");
         advance();
         return makeBoolLit(v, line);
     }
-
-    // Identifier: variable or function call
+    if (check(TokenType::STRING_LIT)) {
+        std::string v = current().value;
+        advance();
+        return makeStringLit(std::move(v), line);
+    }
     if (check(TokenType::IDENT)) {
         std::string name = advance().value;
-
-        // Function call: name ( args )
         if (match(TokenType::LPAREN)) {
             std::vector<ExprPtr> args;
             if (!check(TokenType::RPAREN)) {
@@ -319,12 +311,8 @@ ExprPtr Parser::parsePrimary() {
             expect(TokenType::RPAREN, "expected ')' after arguments");
             return makeCall(name, std::move(args), line);
         }
-
-        // Plain variable
         return makeVar(name, line);
     }
-
-    // Grouped expression: ( expr )
     if (match(TokenType::LPAREN)) {
         ExprPtr e = parseExpr();
         expect(TokenType::RPAREN, "expected ')'");

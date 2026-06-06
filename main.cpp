@@ -30,17 +30,17 @@ int main(int argc, char* argv[]) {
         // Phase 3: Semantic analysis
         SemanticAnalyzer sema;
         sema.analyze(prog);
-        std::cerr << "[sema]   OK\n";
+        // std::cerr << "[sema]   OK\n";
 
         // Phase 4: IR generation
         IRGen irgen;
         IRProgram ir = irgen.generate(prog);
-        std::cerr << "[irgen]  OK\n";
+        // std::cerr << "[irgen]  OK\n";
 
         // Phase 5: Code generation
         CodeGen codegen;
         std::string asmOut = codegen.generate(ir, prog);
-        std::cerr << "[codegen] OK\n";
+        // std::cerr << "[codegen] OK\n";
 
         // Write .asm file
         std::ofstream out(outfile);

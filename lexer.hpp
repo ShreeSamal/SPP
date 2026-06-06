@@ -5,7 +5,7 @@
 // ─── Token Types ─────────────────────────────────────────────────────────────
 enum class TokenType {
     // Literals
-    INT_LIT, FLOAT_LIT, BOOL_LIT,
+    INT_LIT, FLOAT_LIT, BOOL_LIT, STRING_LIT,
 
     // Identifier
     IDENT,
@@ -14,7 +14,7 @@ enum class TokenType {
     LET, FN, IF, ELSE, WHILE, RETURN, PRINT,
 
     // Types
-    TYPE_INT, TYPE_FLOAT, TYPE_BOOL, TYPE_VOID,
+    TYPE_INT, TYPE_FLOAT, TYPE_BOOL, TYPE_VOID, TYPE_STRING,
 
     // Arithmetic operators
     PLUS, MINUS, STAR, SLASH, PERCENT,
@@ -68,6 +68,7 @@ private:
 
     Token readIdentifierOrKeyword();
     Token readNumber();
+    Token readString();
     Token readSymbol();
 
     static TokenType keywordType(const std::string& word);

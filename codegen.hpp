@@ -8,35 +8,35 @@
 
 class CodeGen {
 public:
-    // generate full .asm file content from IR + original program (for type info)
     std::string generate(const IRProgram& ir, const Program& prog);
 
 private:
-    // ── Output stream ─────────────────────────────────────────────────────
     std::ostringstream out;
+    std::ostringstream dataSection;   // accumulates .data entries
 
-    // ── Per-function state ────────────────────────────────────────────────
-    std::unordered_map<std::string, int> stackMap;  // name → rbp offset (negative)
-    int                                  stackSize;  // total bytes allocated
-    std::vector<std::string>             pendingArgs; // staged params before call
+    std::unordered_map<std::string, int>    stackMap;
+    int                                      stackSize = 0;
+    std::vector<std::string>                 pendingArgs;
+    std::unordered_map<std::string, std::string> fnReturnTypes;
 
-    // type info per function (for float detection)
-    // maps varname/temp → TypeKind — populated during function scan
-    std::unordered_map<std::string, std::string> fnReturnTypes; // fnName → "int"|"float"|"bool"|"void"
+    // string literal pool: content → label name
+    std::unordered_map<std::string, std::string> stringPool;
+    int stringCount = 0;
 
-    // ── Helpers ───────────────────────────────────────────────────────────
+    // type map: temp/var name → "int"|"float"|"string"|"bool"
+    std::unordered_map<std::string, std::string> typeMap;
+
     void        collectFnInfo(const Program& prog);
-    int         allocSlot(const std::string& name);   // get or create stack slot
-    std::string slot(const std::string& name);         // "[rbp - N]"
+    int         allocSlot(const std::string& name);
+    std::string slot(const std::string& name);
     void        emit(const std::string& line);
     void        emitLabel(const std::string& label);
+    std::string internString(const std::string& content);
 
-    // ── Per-function codegen ──────────────────────────────────────────────
     void genFunction(const IRFunction& fn);
-    void scanLocals(const IRFunction& fn);             // pass 1: allocate all slots
+    void scanLocals(const IRFunction& fn);
     void genInstr(const IRInstr& ins);
 
-    // ── Instruction helpers ───────────────────────────────────────────────
     void genBinary(const IRInstr& ins);
     void genUnary(const IRInstr& ins);
     void genCall(const IRInstr& ins);

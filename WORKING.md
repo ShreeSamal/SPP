@@ -110,8 +110,8 @@ struct Token {
 
 ```
 Keywords:    LET, FN, IF, ELSE, WHILE, RETURN, PRINT
-Types:       TYPE_INT, TYPE_FLOAT, TYPE_BOOL, TYPE_VOID
-Literals:    INT_LIT, FLOAT_LIT, BOOL_LIT
+Types:       TYPE_INT, TYPE_FLOAT, TYPE_BOOL, TYPE_VOID, TYPE_STRING
+Literals:    INT_LIT, FLOAT_LIT, BOOL_LIT, STRING_LIT
 Identifier:  IDENT
 Arithmetic:  PLUS(+)  MINUS(-)  STAR(*)  SLASH(/)  PERCENT(%)
 Comparison:  EQ_EQ(==)  BANG_EQ(!=)  LT(<)  GT(>)  LT_EQ(<=)  GT_EQ(>=)
@@ -132,6 +132,7 @@ void loop:
     if pos >= src.size() → emit EOF, stop
     if current char is letter or _  → readIdentifierOrKeyword()
     if current char is digit        → readNumber()
+    if current char is '"'          → readString()
     else                            → readSymbol()
 ```
 
@@ -145,6 +146,7 @@ Then check against keyword table:
   "if"     → IF
   "int"    → TYPE_INT
   "true"   → BOOL_LIT
+  "string" → TYPE_STRING
   anything else → IDENT
 ```
 
@@ -155,6 +157,25 @@ If next char is '.' and char after that is digit:
     consume '.' and more digits: "3.14" → FLOAT_LIT
 else:
     "123" → INT_LIT
+```
+
+
+**Reading a string literal:**
+```
+See '"' → consume it (opening quote)
+Loop: consume characters until closing '"'
+    if '\\' seen → read next char as escape:
+        'n'  → newline character
+        't'  → tab character
+        '\\' → backslash
+        '"'  → double quote
+Consume closing '"'
+Return STRING_LIT with the unescaped content
+```
+Error if end of file is reached before closing quote:
+```
+Source: let s: string = "unterminated;
+Error:  Lexer error: Unterminated string at line 1
 ```
 
 **Reading a symbol:**
@@ -319,12 +340,13 @@ struct Stmt {
 **Expr** — one expression. All expression kinds share one struct:
 ```cpp
 struct Expr {
-    ExprKind kind;   // LITERAL_INT, LITERAL_FLOAT, LITERAL_BOOL,
+    ExprKind kind;   // LITERAL_INT, LITERAL_FLOAT, LITERAL_BOOL, LITERAL_STRING,
                      // VAR, BINARY, UNARY, CALL
 
     long long   ival;   // for LITERAL_INT
     double      fval;   // for LITERAL_FLOAT
     bool        bval;   // for LITERAL_BOOL
+    std::string sval;   // for LITERAL_STRING (the unescaped content)
     std::string name;   // for VAR and CALL
     std::string op;     // for BINARY and UNARY: "+", "-", "=="...
     ExprPtr     left;   // for BINARY (left side) and UNARY (operand)
@@ -437,10 +459,27 @@ Else:
 
 **If statement:**
 ```
-if (cond) { then } else { else }
-│   │        │              │
-│   expr     block          block (optional)
+if (cond) { then } else if (cond) { ... } else { else }
+│   │                   │                        │
+│   expr                another if_stmt (recurse) block (optional)
 keyword
+```
+
+The key insight: after `else`, the parser checks if the next token
+is `if`. If so, it calls `parseIfStmt()` recursively and wraps
+the result in a synthetic block. This gives unlimited `else if`
+chaining with no special grammar rule needed:
+```cpp
+if (match(ELSE)) {
+    if (check(IF)) {
+        // else if → parse nested if, wrap in block
+        auto nested = parseIfStmt();
+        elseBlock = make_unique<Block>();
+        elseBlock->stmts.push_back(move(nested));
+    } else {
+        elseBlock = parseBlock();  // plain else { }
+    }
+}
 ```
 
 **While statement:**
@@ -523,6 +562,7 @@ ExprPtr parsePrimary() {
     if INT_LIT  → return makeIntLit(stoll(value))
     if FLOAT_LIT → return makeFloatLit(stod(value))
     if BOOL_LIT  → return makeBoolLit(value == "true")
+    if STRING_LIT → return makeStringLit(value)  // sval = unescaped content
     if IDENT:
         name = advance()
         if next is '(':          // function call
@@ -898,6 +938,19 @@ genExpr(Call("add", [Var(x), IntLit(5)])):
   return "t2"
 ```
 
+
+**String literal:**
+```
+genExpr(StringLit("hello")):
+  t = newTemp()         // allocate t0
+  // op_str carries the actual content
+  emit: t0 = __str__   (op_str = "hello")
+  return "t0"
+```
+The sentinel value `__str__` in `src1` signals to the code generator
+that this is a string — not a numeric literal. The actual content
+travels in the `op_str` field of `IRInstr`.
+
 ### Generating IR for control flow
 
 Control flow is lowered to labels and jumps using a label counter:
@@ -1271,6 +1324,58 @@ ASM:   mov  rax, qword [rbp - 8]   ; return value goes in rax
        ret
 ```
 
+
+### String literals in .data
+
+Every unique string literal is **interned** — stored once in the `.data`
+section with a generated label (`str0`, `str1`, ...). When the same
+string appears multiple times, the same label is reused.
+
+```nasm
+section .data
+    fmt_int   db "%lld", 10, 0
+    fmt_float db "%f",   10, 0
+    fmt_str   db "%s",   10, 0     ← new format for strings
+    str0 db "S++", 0               ← interned string
+    str1 db "Hello, World!", 0
+    str2 db "col1", 9, "col2", 0   ← tab (ASCII 9) emitted as number
+```
+
+Escape sequences are resolved by the lexer and the codegen emits
+non-printable characters as their decimal ASCII values:
+```
+"col1\tcol2"  →  db "col1", 9, "col2", 0
+"line1\nline2" →  db "line1", 10, "line2", 0
+```
+
+**String variable IR → assembly:**
+```
+IR:   t0 = __str__  (op_str = "hello")
+ASM:  lea  rax, [rel str0]      ; load address of string label
+      mov  qword [rbp-8], rax   ; store pointer in stack slot
+```
+Strings are stored as **pointers** on the stack (8 bytes, just like int),
+but they point into the `.data` section instead of holding a value.
+
+**Print string vs print int:**
+```
+IR:   print t0
+
+If t0 is string type:
+ASM:  mov  rsi, qword [rbp-8]   ; pointer to string
+      lea  rdi, [rel fmt_str]   ; "%s\n"
+      xor  eax, eax
+      call printf
+
+If t0 is int/bool type:
+ASM:  mov  rsi, qword [rbp-8]   ; integer value
+      lea  rdi, [rel fmt_int]   ; "%lld\n"
+      xor  eax, eax
+      call printf
+```
+The codegen maintains a `typeMap` — a dictionary from temp/variable name
+to type string — to know which format to use at each `print`.
+
 ### Output file structure
 
 Every compiled S++ program produces this structure:
@@ -1279,6 +1384,8 @@ Every compiled S++ program produces this structure:
 section .data
     fmt_int   db "%lld", 10, 0    ; integer/bool format: "%lld\n"
     fmt_float db "%f",   10, 0    ; float format: "%f\n"
+    fmt_str   db "%s",   10, 0    ; string format: "%s\n"
+    str0 db "hello", 0            ; interned string literals (if any)
 
 section .text
     global main                    ; entry point for linker
