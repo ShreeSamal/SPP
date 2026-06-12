@@ -49,7 +49,7 @@ Every S++ program is:
 
 ```bash
 # Linux / WSL
-sudo apt install g++ nasm gcc make
+sudo apt install g++ nasm gcc
 ```
 
 ### Build the compiler
@@ -57,7 +57,7 @@ sudo apt install g++ nasm gcc make
 ```bash
 git clone <repo>
 cd spp
-make
+./build.sh
 ```
 
 ### Write your first program
@@ -486,7 +486,7 @@ fn main() -> void {
 
 ```bash
 # Build compiler
-make
+./build.sh
 
 # Compile and run a .spp file
 ./run.sh program.spp
